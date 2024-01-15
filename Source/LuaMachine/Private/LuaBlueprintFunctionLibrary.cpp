@@ -12,11 +12,7 @@
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "IPlatformFilePak.h"
-#if ENGINE_MAJOR_VERSION >= 5
-#include "HAL/PlatformFileManager.h" 
-#else
 #include "HAL/PlatformFilemanager.h"
-#endif
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION > 0
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -27,6 +23,10 @@
 #include "Misc/FileHelper.h"
 #include "Serialization/ArrayReader.h"
 #include "TextureResource.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+
+TArray<TWeakObjectPtr<UObject>> LuaSubCategoryObjects;
 
 FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateNil()
 {
@@ -70,65 +70,49 @@ FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateUFunction(UObject* InObject, co
 	return FLuaValue();
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateTable(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateTable(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	FLuaValue LuaValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return LuaValue;
-
-	return L->CreateLuaTable();
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	
+	return State->CreateLuaTable();
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateLazyTable(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateLazyTable(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	FLuaValue LuaValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return LuaValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	return L->CreateLuaLazyTable();
+	return State->CreateLuaLazyTable();
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateThread(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue Value)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateThread(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue Value)
 {
-	FLuaValue LuaValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return LuaValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	
+	return State->CreateLuaThread(Value);;
 
-	return L->CreateLuaThread(Value);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateObjectInState(UObject* WorldContextObject, TSubclassOf<ULuaState> State, UObject* InObject)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateObjectInState(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, UObject* InObject)
 {
-	FLuaValue LuaValue;
-	if (!InObject)
-		return LuaValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return LuaValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	LuaValue = FLuaValue(InObject);
-	LuaValue.LuaState = L;
-	return LuaValue;
+	return State->CreateObject(InObject);
 }
 
-void ULuaBlueprintFunctionLibrary::LuaStateDestroy(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+void ULuaBlueprintFunctionLibrary::LuaStateDestroy(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+
+	State->DestroyState();
+}
+
+void ULuaBlueprintFunctionLibrary::LuaStateReload(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
+{
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	if (!State)
 		return;
-	FLuaMachineModule::Get().UnregisterLuaState(L);
-}
-
-void ULuaBlueprintFunctionLibrary::LuaStateReload(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
-{
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
-	FLuaMachineModule::Get().UnregisterLuaState(L);
-	FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
+	FLuaMachineModule::Get().UnregisterLuaState(State);
+	FLuaMachineModule::Get().GetLuaState(StateClass, WorldContextObject->GetWorld());
 }
 
 FString ULuaBlueprintFunctionLibrary::Conv_LuaValueToString(const FLuaValue& Value)
@@ -179,6 +163,11 @@ FLuaValue ULuaBlueprintFunctionLibrary::Conv_ObjectToLuaValue(UObject* Object)
 	return FLuaValue(Object);
 }
 
+FLuaValue ULuaBlueprintFunctionLibrary::Conv_ClassToLuaValue(UClass* ClassName)
+{
+	UObject* Object = ClassName;
+	return FLuaValue(Object);
+}
 
 FLuaValue ULuaBlueprintFunctionLibrary::Conv_FloatToLuaValue(const float Value)
 {
@@ -188,6 +177,34 @@ FLuaValue ULuaBlueprintFunctionLibrary::Conv_FloatToLuaValue(const float Value)
 FLuaValue ULuaBlueprintFunctionLibrary::Conv_BoolToLuaValue(const bool Value)
 {
 	return FLuaValue(Value);
+}
+
+FLuaValue ULuaBlueprintFunctionLibrary::Conv_VectorToLuaValue(ULuaState* State, const FVector& Value)
+{
+	FLuaValue ReturnValue;
+	
+	if (State)
+	{
+		// Determine if we have vector available on our first run
+		static bool vectorAvailable = !State->GetGlobal(FString("vector")).IsNil();
+
+		if (vectorAvailable)
+		{
+			TArray<FLuaValue> components({ Value.X, Value.Y, Value.Z });
+			ReturnValue = State->GlobalCall("vector", components);
+			return ReturnValue;
+		}
+
+		ReturnValue = State->CreateLuaTable();
+
+		ReturnValue.SetField("x", Value.X);
+		ReturnValue.SetField("y", Value.Y);
+		ReturnValue.SetField("z", Value.Z);
+
+		ReturnValue.SubCategoryObjectType = ELuaSubCategoryObjectType::Vector;
+	}
+
+	return ReturnValue;
 }
 
 int32 ULuaBlueprintFunctionLibrary::Conv_LuaValueToInt(const FLuaValue& Value)
@@ -225,50 +242,25 @@ FLuaValue ULuaBlueprintFunctionLibrary::Conv_NameToLuaValue(const FName Value)
 	return FLuaValue(Value.ToString());
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaGetGlobal(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Name)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaGetGlobal(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Name)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return FLuaValue();
-
-	uint32 ItemsToPop = L->GetFieldFromTree(Name);
-	FLuaValue ReturnValue = L->ToLuaValue(-1);
-	L->Pop(ItemsToPop);
-	return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	
+	return State->GetGlobal(Name);
 }
 
-int64 ULuaBlueprintFunctionLibrary::LuaValueToPointer(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue Value)
+int64 ULuaBlueprintFunctionLibrary::LuaValueToPointer(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue Value)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return 0;
-
-	L->FromLuaValue(Value);
-	const void* Ptr = L->ToPointer(-1);
-	L->Pop();
-
-	return (int64)Ptr;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	
+	return State->ValueToPointer(Value);
 }
 
-FString ULuaBlueprintFunctionLibrary::LuaValueToHexPointer(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue Value)
+FString ULuaBlueprintFunctionLibrary::LuaValueToHexPointer(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue Value)
 {
-	int64 Ptr = LuaValueToPointer(WorldContextObject, State, Value);
-	if (FGenericPlatformProperties::IsLittleEndian())
-	{
-		uint8 BEPtr[8] =
-		{
-			(uint8)((Ptr >> 56) & 0xff),
-			(uint8)((Ptr >> 48) & 0xff),
-			(uint8)((Ptr >> 40) & 0xff),
-			(uint8)((Ptr >> 32) & 0xff),
-			(uint8)((Ptr >> 24) & 0xff),
-			(uint8)((Ptr >> 16) & 0xff),
-			(uint8)((Ptr >> 8) & 0xff),
-			(uint8)((Ptr) & 0xff),
-		};
-		return BytesToHex((const uint8*)BEPtr, sizeof(int64));
-	}
-	return BytesToHex((const uint8*)&Ptr, sizeof(int64));
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	
+	return State->ValueToHexPointer(Value);
 }
 
 FString ULuaBlueprintFunctionLibrary::LuaValueToBase64(const FLuaValue& Value)
@@ -376,63 +368,25 @@ FString ULuaBlueprintFunctionLibrary::LuaValueToUTF32(const FLuaValue& Value)
 #endif
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaRunFile(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Filename, const bool bIgnoreNonExistent)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunFile(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Filename, const bool bIgnoreNonExistent)
 {
-	FLuaValue ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
-
-	if (!L->RunFile(Filename, bIgnoreNonExistent, 1))
-	{
-		if (L->bLogError)
-			L->LogError(L->LastError);
-		L->ReceiveLuaError(L->LastError);
-	}
-	else
-	{
-		ReturnValue = L->ToLuaValue(-1);
-	}
-
-	L->Pop();
-	return ReturnValue;
+	return State->RunFile(Filename, bIgnoreNonExistent);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaRunNonContentFile(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Filename, const bool bIgnoreNonExistent)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunNonContentFile(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Filename, const bool bIgnoreNonExistent)
 {
-	FLuaValue ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
-
-	if (!L->RunFile(Filename, bIgnoreNonExistent, 1, true))
-	{
-		if (L->bLogError)
-			L->LogError(L->LastError);
-		L->ReceiveLuaError(L->LastError);
-	}
-	else
-	{
-		ReturnValue = L->ToLuaValue(-1);
-	}
-
-	L->Pop();
-	return ReturnValue;
+	return State->RunNonContentFile(Filename, bIgnoreNonExistent);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaRunString(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& CodeString, FString CodePath)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunString(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& CodeString, FString CodePath)
 {
-	FLuaValue ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-	{
-		return ReturnValue;
-	}
-
-	return L->RunString(CodeString, CodePath);
+	return State->RunString(CodeString, CodePath);
 }
 
 ELuaThreadStatus ULuaBlueprintFunctionLibrary::LuaThreadGetStatus(FLuaValue Value)
@@ -451,50 +405,18 @@ int32 ULuaBlueprintFunctionLibrary::LuaThreadGetStackTop(FLuaValue Value)
 	return Value.LuaState->GetLuaThreadStackTop(Value);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaRunCodeAsset(UObject* WorldContextObject, TSubclassOf<ULuaState> State, ULuaCode* CodeAsset)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunCodeAsset(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, ULuaCode* CodeAsset)
 {
-	FLuaValue ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	if (!CodeAsset)
-		return ReturnValue;
-
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
-
-	if (!L->RunCodeAsset(CodeAsset, 1))
-	{
-		if (L->bLogError)
-			L->LogError(L->LastError);
-		L->ReceiveLuaError(L->LastError);
-	}
-	else {
-		ReturnValue = L->ToLuaValue(-1);
-	}
-	L->Pop();
-	return ReturnValue;
+	return State->RunCodeAsset(CodeAsset);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaRunByteCode(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const TArray<uint8>& ByteCode, const FString& CodePath)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunByteCode(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const TArray<uint8>& ByteCode, const FString& CodePath)
 {
-	FLuaValue ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
-
-	if (!L->RunCode(ByteCode, CodePath, 1))
-	{
-		if (L->bLogError)
-			L->LogError(L->LastError);
-		L->ReceiveLuaError(L->LastError);
-	}
-	else
-	{
-		ReturnValue = L->ToLuaValue(-1);
-	}
-	L->Pop();
-	return ReturnValue;
+	return State->RunByteCode(ByteCode, CodePath);
 }
 
 UTexture2D* ULuaBlueprintFunctionLibrary::LuaValueToTransientTexture(int32 Width, int32 Height, const FLuaValue& Value, EPixelFormat PixelFormat, bool bDetectFormat)
@@ -569,180 +491,18 @@ UTexture2D* ULuaBlueprintFunctionLibrary::LuaValueToTransientTexture(int32 Width
 	return Texture;
 }
 
-void ULuaBlueprintFunctionLibrary::LuaHttpRequest(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Method, const FString& URL, TMap<FString, FString> Headers, FLuaValue Body, FLuaValue Context, const FLuaHttpResponseReceived& ResponseReceived, const FLuaHttpError& Error)
+void ULuaBlueprintFunctionLibrary::LuaHttpRequest(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Method, const FString& URL, TMap<FString, FString> Headers, FLuaValue Body, FLuaValue Context, const FLuaHttpResponseReceived& ResponseReceived, const FLuaHttpError& Error)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
-	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-#else
-	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
-#endif
-	HttpRequest->SetVerb(Method);
-	HttpRequest->SetURL(URL);
-	for (TPair<FString, FString> Header : Headers)
-	{
-		HttpRequest->AppendToHeader(Header.Key, Header.Value);
-	}
-	HttpRequest->SetContent(Body.ToBytes());
+	State->HttpRequest(Method, URL, Headers, Body, Context, ResponseReceived, Error);
 
-	TSharedRef<FLuaSmartReference> ContextSmartRef = L->AddLuaSmartReference(Context);
-
-	HttpRequest->OnProcessRequestComplete().BindStatic(&ULuaBlueprintFunctionLibrary::HttpGenericRequestDone, TWeakPtr<FLuaSmartReference>(ContextSmartRef), ResponseReceived, Error);
-	HttpRequest->ProcessRequest();
 }
 
-void ULuaBlueprintFunctionLibrary::HttpGenericRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, TWeakPtr<FLuaSmartReference> Context, FLuaHttpResponseReceived ResponseReceived, FLuaHttpError Error)
+void ULuaBlueprintFunctionLibrary::LuaRunURL(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& URL, TMap<FString, FString> Headers, const FString& SecurityHeader, const FString& SignaturePublicExponent, const FString& SignatureModulus, FLuaHttpSuccess Completed)
 {
-	// if the context is invalid, the LuaState is already dead
-	if (!Context.IsValid())
-		return;
-
-	TSharedRef<FLuaSmartReference> SmartContext = Context.Pin().ToSharedRef();
-
-	SmartContext->LuaState->RemoveLuaSmartReference(SmartContext);
-
-	if (!bWasSuccessful)
-	{
-		Error.ExecuteIfBound(SmartContext->Value);
-		return;
-	}
-
-	FLuaValue StatusCode = FLuaValue(Response->GetResponseCode());
-	FLuaValue Headers = SmartContext->LuaState->CreateLuaTable();
-	for (auto HeaderLine : Response->GetAllHeaders())
-	{
-		int32 Index;
-		if (HeaderLine.Len() > 2 && HeaderLine.FindChar(':', Index))
-		{
-			FString Key;
-			if (Index > 0)
-				Key = HeaderLine.Left(Index);
-			FString Value = HeaderLine.Right(HeaderLine.Len() - (Index + 2));
-			Headers.SetField(Key, FLuaValue(Value));
-		}
-	}
-	FLuaValue Content = FLuaValue(Response->GetContent());
-	FLuaValue LuaHttpResponse = SmartContext->LuaState->CreateLuaTable();
-	LuaHttpResponse.SetFieldByIndex(1, StatusCode);
-	LuaHttpResponse.SetFieldByIndex(2, Headers);
-	LuaHttpResponse.SetFieldByIndex(3, Content);
-	ResponseReceived.ExecuteIfBound(SmartContext->Value, LuaHttpResponse);
-}
-
-void ULuaBlueprintFunctionLibrary::LuaRunURL(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& URL, TMap<FString, FString> Headers, const FString& SecurityHeader, const FString& SignaturePublicExponent, const FString& SignatureModulus, FLuaHttpSuccess Completed)
-{
-
-	// Security CHECK
-	if (!SecurityHeader.IsEmpty() || !SignaturePublicExponent.IsEmpty() || !SignatureModulus.IsEmpty())
-	{
-		if (SecurityHeader.IsEmpty() || SignaturePublicExponent.IsEmpty() || SignatureModulus.IsEmpty())
-		{
-			UE_LOG(LogLuaMachine, Error, TEXT("For secure LuaRunURL() you need to specify the Security HTTP Header, the Signature Public Exponent and the Signature Modulus"));
-			return;
-		}
-	}
-#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
-	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
-#else
-	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
-#endif
-	HttpRequest->SetURL(URL);
-	for (TPair<FString, FString> Header : Headers)
-	{
-		HttpRequest->AppendToHeader(Header.Key, Header.Value);
-	}
-	HttpRequest->OnProcessRequestComplete().BindStatic(&ULuaBlueprintFunctionLibrary::HttpRequestDone, State, TWeakObjectPtr<UWorld>(WorldContextObject->GetWorld()), SecurityHeader, SignaturePublicExponent, SignatureModulus, Completed);
-	HttpRequest->ProcessRequest();
-}
-
-void ULuaBlueprintFunctionLibrary::HttpRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, TSubclassOf<ULuaState> LuaState, TWeakObjectPtr<UWorld> World, const FString SecurityHeader, const FString SignaturePublicExponent, const FString SignatureModulus, FLuaHttpSuccess Completed)
-{
-	FLuaValue ReturnValue;
-	int32 StatusCode = -1;
-
-	if (!bWasSuccessful)
-	{
-		UE_LOG(LogLuaMachine, Error, TEXT("HTTP session failed for \"%s %s\""), *Request->GetVerb(), *Request->GetURL());
-	}
-
-	else if (!World.IsValid())
-	{
-		UE_LOG(LogLuaMachine, Error, TEXT("Unable to access LuaState as the World object is no more available (\"%s %s\")"), *Request->GetVerb(), *Request->GetURL());
-	}
-	else
-	{
-		// Check signature
-		if (!SecurityHeader.IsEmpty())
-		{
-			// check code size
-			if (Response->GetContentLength() <= 0)
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Content Size"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-			FString EncryptesSignatureBase64 = Response->GetHeader(SecurityHeader);
-			if (EncryptesSignatureBase64.IsEmpty())
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Security HTTP Header"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-
-			const uint32 KeySize = 64;
-
-			TArray<uint8> Signature;
-			FBase64::Decode(EncryptesSignatureBase64, Signature);
-
-			if (Signature.Num() != KeySize)
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-			TEncryptionInt SignatureValue = TEncryptionInt((uint32*)&Signature[0]);
-
-			TArray<uint8> PublicExponent;
-			FBase64::Decode(SignaturePublicExponent, PublicExponent);
-			if (PublicExponent.Num() != KeySize)
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature Public Exponent"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-
-			TArray<uint8> Modulus;
-			FBase64::Decode(SignatureModulus, Modulus);
-			if (Modulus.Num() != KeySize)
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature Modulus"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-
-			TEncryptionInt PublicKey = TEncryptionInt((uint32*)&PublicExponent[0]);
-			TEncryptionInt ModulusValue = TEncryptionInt((uint32*)&Modulus[0]);
-
-			TEncryptionInt ShaHash;
-			FSHA1::HashBuffer(Response->GetContent().GetData(), Response->GetContentLength(), (uint8*)&ShaHash);
-
-			TEncryptionInt DecryptedSignature = FEncryption::ModularPow(SignatureValue, PublicKey, ModulusValue);
-			if (DecryptedSignature != ShaHash)
-			{
-				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Signature check failed"));
-				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
-				return;
-			}
-		}
-
-		ReturnValue = LuaRunString(World.Get(), LuaState, Response->GetContentAsString());
-		StatusCode = Response->GetResponseCode();
-	}
-
-	Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	State->RunURL(WorldContextObject, URL, Headers, SecurityHeader, SignaturePublicExponent, SignatureModulus, Completed);
 }
 
 void ULuaBlueprintFunctionLibrary::LuaTableFillObject(FLuaValue InTable, UObject* InObject)
@@ -872,13 +632,12 @@ FLuaValue ULuaBlueprintFunctionLibrary::LuaTableGetByIndex(FLuaValue Table, int3
 	return Table.GetFieldByIndex(Index);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::AssignLuaValueToLuaState(UObject* WorldContextObject, FLuaValue Value, TSubclassOf<ULuaState> State)
+FLuaValue ULuaBlueprintFunctionLibrary::AssignLuaValueToLuaState(UObject* WorldContextObject, FLuaValue Value, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return Value;
-	Value.LuaState = L;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+	Value.LuaState = State;
 	return Value;
+
 }
 
 FLuaValue ULuaBlueprintFunctionLibrary::LuaTableSetByIndex(FLuaValue Table, int32 Index, FLuaValue Value)
@@ -914,29 +673,11 @@ FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentAsLuaValue(AActor* Actor)
 	return FLuaValue(Actor->GetComponentByClass(ULuaComponent::StaticClass()));
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByStateAsLuaValue(AActor* Actor, TSubclassOf<ULuaState> State)
+FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByStateAsLuaValue(AActor* Actor, TSubclassOf<ULuaState> StateClass)
 {
-	if (!Actor)
-		return FLuaValue();
-#if ENGINE_MAJOR_VERSION < 5 && ENGINE_MINOR_VERSION < 24
-	TArray<UActorComponent*> Components = Actor->GetComponentsByClass(ULuaComponent::StaticClass());
-#else
-	TArray<UActorComponent*> Components;
-	Actor->GetComponents(Components);
-#endif
-	for (UActorComponent* Component : Components)
-	{
-		ULuaComponent* LuaComponent = Cast<ULuaComponent>(Component);
-		if (LuaComponent)
-		{
-			if (LuaComponent->LuaState == State)
-			{
-				return FLuaValue(LuaComponent);
-			}
-		}
-	}
+	ULuaState* State = FLuaMachineModule::Get().GetLuaState(StateClass, Actor->GetWorld());
 
-	return FLuaValue();
+	return State->GetLuaComponentAsLuaValue(Actor);
 }
 
 FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByNameAsLuaValue(AActor* Actor, const FString& Name)
@@ -965,172 +706,53 @@ FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByNameAsLuaValue(AActor* 
 	return FLuaValue();
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByStateAndNameAsLuaValue(AActor* Actor, TSubclassOf<ULuaState> State, const FString& Name)
+FLuaValue ULuaBlueprintFunctionLibrary::GetLuaComponentByStateAndNameAsLuaValue(AActor* Actor, TSubclassOf<ULuaState> StateClass, const FString& Name)
 {
-	if (!Actor)
-		return FLuaValue();
+	ULuaState* State = FLuaMachineModule::Get().GetLuaState(StateClass, Actor->GetWorld());
 
-#if ENGINE_MAJOR_VERSION < 5 && ENGINE_MINOR_VERSION < 24
-	TArray<UActorComponent*> Components = Actor->GetComponentsByClass(ULuaComponent::StaticClass());
-#else
-	TArray<UActorComponent*> Components;
-	Actor->GetComponents(Components);
-#endif
-	for (UActorComponent* Component : Components)
-	{
-		ULuaComponent* LuaComponent = Cast<ULuaComponent>(Component);
-		if (LuaComponent)
-		{
-			if (LuaComponent->LuaState == State && LuaComponent->GetName() == Name)
-			{
-				return FLuaValue(LuaComponent);
-			}
-		}
-	}
-
-	return FLuaValue();
+	return State->GetLuaComponentByNameAsLuaValue(Actor, Name);
 }
 
-int32 ULuaBlueprintFunctionLibrary::LuaGetTop(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+int32 ULuaBlueprintFunctionLibrary::LuaGetTop(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return MIN_int32;
-	return L->GetTop();
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+
+	return State->GetTop();
 }
 
-void ULuaBlueprintFunctionLibrary::LuaSetGlobal(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Name, FLuaValue Value)
+void ULuaBlueprintFunctionLibrary::LuaSetGlobal(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Name, FLuaValue Value)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
-	L->SetFieldFromTree(Name, Value, true);
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+
+	return State->SetGlobal(Name, Value);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaGlobalCall(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Name, TArray<FLuaValue> Args)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaGlobalCall(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Name, TArray<FLuaValue> Args)
 {
-	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	int32 ItemsToPop = L->GetFieldFromTree(Name);
-
-	int NArgs = 0;
-	for (FLuaValue& Arg : Args)
-	{
-		L->FromLuaValue(Arg);
-		NArgs++;
-	}
-
-	L->PCall(NArgs, ReturnValue);
-
-	// we have the return value and the function has been removed, so we do not need to change ItemsToPop
-	L->Pop(ItemsToPop);
-
-	return ReturnValue;
+	return State->GlobalCall(Name, Args);
 }
 
-TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaGlobalCallMulti(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Name, TArray<FLuaValue> Args)
+TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaGlobalCallMulti(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Name, TArray<FLuaValue> Args)
 {
-	TArray<FLuaValue> ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	int32 ItemsToPop = L->GetFieldFromTree(Name);
-
-	int32 StackTop = L->GetTop();
-
-	int NArgs = 0;
-	for (FLuaValue& Arg : Args)
-	{
-		L->FromLuaValue(Arg);
-		NArgs++;
-	}
-
-	FLuaValue LastReturnValue;
-	if (L->PCall(NArgs, LastReturnValue, LUA_MULTRET))
-	{
-
-		int32 NumOfReturnValues = (L->GetTop() - StackTop) + 1;
-		if (NumOfReturnValues > 0)
-		{
-			for (int32 i = -1; i >= -(NumOfReturnValues); i--)
-			{
-				ReturnValue.Insert(L->ToLuaValue(i), 0);
-			}
-			L->Pop(NumOfReturnValues - 1);
-		}
-
-	}
-
-	// we have the return value and the function has been removed, so we do not need to change ItemsToPop
-	L->Pop(ItemsToPop);
-
-	return ReturnValue;
+	return State->GlobalCallMulti(Name, Args);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaGlobalCallValue(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue Value, TArray<FLuaValue> Args)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaGlobalCallValue(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue Value, TArray<FLuaValue> Args)
 {
-	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	L->FromLuaValue(Value);
-
-	int NArgs = 0;
-	for (FLuaValue& Arg : Args)
-	{
-		L->FromLuaValue(Arg);
-		NArgs++;
-	}
-
-	L->PCall(NArgs, ReturnValue);
-
-	L->Pop();
-
-	return ReturnValue;
+	return State->GlobalCallValue(Value, Args);
 }
 
-TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaGlobalCallValueMulti(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue Value, TArray<FLuaValue> Args)
+TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaGlobalCallValueMulti(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue Value, TArray<FLuaValue> Args)
 {
-	TArray<FLuaValue> ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	L->FromLuaValue(Value);
-
-	int32 StackTop = L->GetTop();
-
-	int NArgs = 0;
-	for (FLuaValue& Arg : Args)
-	{
-		L->FromLuaValue(Arg);
-		NArgs++;
-	}
-
-	FLuaValue LastReturnValue;
-	if (L->PCall(NArgs, LastReturnValue, LUA_MULTRET))
-	{
-
-		int32 NumOfReturnValues = (L->GetTop() - StackTop) + 1;
-		if (NumOfReturnValues > 0)
-		{
-			for (int32 i = -1; i >= -(NumOfReturnValues); i--)
-			{
-				ReturnValue.Insert(L->ToLuaValue(i), 0);
-			}
-			L->Pop(NumOfReturnValues - 1);
-		}
-
-	}
-
-	L->Pop();
-
-	return ReturnValue;
+	return State->GlobalCallValueMulti(Value, Args);
 }
 
 FLuaValue ULuaBlueprintFunctionLibrary::LuaValueCall(FLuaValue Value, TArray<FLuaValue> Args)
@@ -1164,6 +786,14 @@ FLuaValue ULuaBlueprintFunctionLibrary::LuaValueCallIfNotNil(FLuaValue Value, TA
 		ReturnValue = LuaValueCall(Value, Args);
 
 	return ReturnValue;
+}
+
+ULuaState* ULuaBlueprintFunctionLibrary::LuaTableGetLuaState(FLuaValue InTable)
+{
+	if(InTable.LuaState.IsValid())
+		return InTable.LuaState.Get();
+
+	return nullptr;
 }
 
 FLuaValue ULuaBlueprintFunctionLibrary::LuaTableKeyCall(FLuaValue InTable, const FString& Key, TArray<FLuaValue> Args)
@@ -1266,64 +896,25 @@ TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaTableMergeUnpack(FLuaValue In
 	return ReturnValue;
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaTablePack(UObject* WorldContextObject, TSubclassOf<ULuaState> State, TArray<FLuaValue> Values)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaTablePack(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, TArray<FLuaValue> Values)
 {
-	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ReturnValue = L->CreateLuaTable();
-
-	int32 Index = 1;
-
-	for (FLuaValue& Value : Values)
-	{
-		ReturnValue.SetFieldByIndex(Index++, Value);
-	}
-
-	return ReturnValue;
+	return State->TablePack(Values);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaTableMergePack(UObject* WorldContextObject, TSubclassOf<ULuaState> State, TArray<FLuaValue> Values1, TArray<FLuaValue> Values2)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaTableMergePack(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, TArray<FLuaValue> Values1, TArray<FLuaValue> Values2)
 {
-	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ReturnValue = L->CreateLuaTable();
-
-	int32 Index = 1;
-
-	for (FLuaValue& Value : Values1)
-	{
-		ReturnValue.SetFieldByIndex(Index++, Value);
-	}
-
-	for (FLuaValue& Value : Values2)
-	{
-		ReturnValue.SetFieldByIndex(Index++, Value);
-	}
-
-	return ReturnValue;
+	return State->TableMergePack(Values1, Values2);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaTableFromMap(UObject* WorldContextObject, TSubclassOf<ULuaState> State, TMap<FString, FLuaValue> Map)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaTableFromMap(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, TMap<FString, FLuaValue> Map)
 {
-	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return ReturnValue;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ReturnValue = L->CreateLuaTable();
-
-	for (TPair<FString, FLuaValue>& Pair : Map)
-	{
-		ReturnValue.SetField(Pair.Key, Pair.Value);
-	}
-
-	return ReturnValue;
+	return State->TableFromMap(Map);
 }
 
 TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaTableRange(FLuaValue InTable, int32 First, int32 Last)
@@ -1562,27 +1153,23 @@ TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaTableGetValues(FLuaValue Tabl
 	return Keys;
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaTableAssetToLuaTable(UObject* WorldContextObject, TSubclassOf<ULuaState> State, ULuaTableAsset* TableAsset)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaTableAssetToLuaTable(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, ULuaTableAsset* TableAsset)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return FLuaValue();
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	return TableAsset->ToLuaTable(L);
+	return State->TableAssetToLuaTable(TableAsset);
 }
 
-FLuaValue ULuaBlueprintFunctionLibrary::LuaNewLuaUserDataObject(UObject* WorldContextObject, TSubclassOf<ULuaState> State, TSubclassOf<ULuaUserDataObject> UserDataObjectClass, bool bTrackObject)
+FLuaValue ULuaBlueprintFunctionLibrary::LuaNewLuaUserDataObject(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, TSubclassOf<ULuaUserDataObject> UserDataObjectClass, bool bTrackObject)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return FLuaValue();
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	return L->NewLuaUserDataObject(UserDataObjectClass, bTrackObject);
+	return State->CreateUserDataObject(UserDataObjectClass, bTrackObject);
 }
 
-ULuaState* ULuaBlueprintFunctionLibrary::LuaGetState(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+ULuaState* ULuaBlueprintFunctionLibrary::LuaGetState(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	return FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
+	return FLuaMachineModule::Get().GetLuaState(StateClass, WorldContextObject->GetWorld());
 }
 
 bool ULuaBlueprintFunctionLibrary::LuaTableImplements(FLuaValue Table, ULuaTableAsset* TableAsset)
@@ -1626,48 +1213,39 @@ bool ULuaBlueprintFunctionLibrary::LuaTableImplementsAny(FLuaValue Table, TArray
 	return false;
 }
 
-int32 ULuaBlueprintFunctionLibrary::LuaGetUsedMemory(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+int32 ULuaBlueprintFunctionLibrary::LuaGetUsedMemory(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return -1;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	return L->GC(LUA_GCCOUNT);
+	return State->GetUsedMemory();
 }
 
-void ULuaBlueprintFunctionLibrary::LuaGCCollect(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+void ULuaBlueprintFunctionLibrary::LuaGCCollect(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	L->GC(LUA_GCCOLLECT);
+	State->GCCollect();
 }
 
-void ULuaBlueprintFunctionLibrary::LuaGCStop(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+void ULuaBlueprintFunctionLibrary::LuaGCStop(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	L->GC(LUA_GCSTOP);
+	State->GCStop();
 }
 
-void ULuaBlueprintFunctionLibrary::LuaGCRestart(UObject* WorldContextObject, TSubclassOf<ULuaState> State)
+void ULuaBlueprintFunctionLibrary::LuaGCRestart(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	L->GC(LUA_GCRESTART);
+	State->GCRestart();
 }
 
-void ULuaBlueprintFunctionLibrary::LuaSetUserDataMetaTable(UObject* WorldContextObject, TSubclassOf<ULuaState> State, FLuaValue MetaTable)
+void ULuaBlueprintFunctionLibrary::LuaSetUserDataMetaTable(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, FLuaValue MetaTable)
 {
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return;
-	L->SetUserDataMetaTable(MetaTable);
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
+
+	State->SetUserDataMetaTable(MetaTable);
 }
 
 bool ULuaBlueprintFunctionLibrary::LuaValueIsReferencedInLuaRegistry(FLuaValue Value)
@@ -1736,24 +1314,11 @@ UObject* ULuaBlueprintFunctionLibrary::LuaValueLoadObject(const FLuaValue& Value
 	return LoadedObject;
 }
 
-bool ULuaBlueprintFunctionLibrary::LuaValueFromJson(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Json, FLuaValue& LuaValue)
+bool ULuaBlueprintFunctionLibrary::LuaValueFromJson(UObject* WorldContextObject, TSubclassOf<ULuaState> StateClass, const FString& Json, FLuaValue& LuaValue)
 {
-	// default to nil
-	LuaValue = FLuaValue();
+	ULuaState* State = LuaGetState(WorldContextObject, StateClass);
 
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
-		return false;
-
-	TSharedPtr<FJsonValue> JsonValue;
-	TSharedRef< TJsonReader<TCHAR> > JsonReader = TJsonReaderFactory<TCHAR>::Create(Json);
-	if (!FJsonSerializer::Deserialize(JsonReader, JsonValue))
-	{
-		return false;
-	}
-
-	LuaValue = FLuaValue::FromJsonValue(L, *JsonValue);
-	return true;
+	return State->ValueFromJson(Json, LuaValue);
 }
 
 FString ULuaBlueprintFunctionLibrary::LuaValueToJson(FLuaValue Value)
@@ -1944,23 +1509,146 @@ void ULuaBlueprintFunctionLibrary::UnregisterLuaConsoleCommand(const FString& Co
 
 ULuaState* ULuaBlueprintFunctionLibrary::CreateDynamicLuaState(UObject* WorldContextObject, TSubclassOf<ULuaState> LuaStateClass)
 {
-	if (!LuaStateClass)
+	return FLuaMachineModule::Get().CreateDynamicLuaState(LuaStateClass, WorldContextObject->GetWorld());
+}
+
+FEdGraphPinType ULuaBlueprintFunctionLibrary::LuaValueToPinType(const FLuaValue& LuaValue)
+{
+	FEdGraphPinType PinType;
+
+	PinType.PinCategory = LuaValueTypeToPinCategory(LuaValue.Type);
+	PinType.PinSubCategoryObject = ObjectTypeFromLuaSubCategoryObjectType(LuaValue.Type, LuaValue.SubCategoryObjectType);
+	return PinType;
+}
+
+FName ULuaBlueprintFunctionLibrary::LuaValueTypeToPinCategory(const ELuaValueType Type)
+{
+	FName PinCategory;
+
+	switch (Type)
 	{
+	case ELuaValueType::Nil:
+		PinCategory = UEdGraphSchema_K2::PC_Wildcard;
+		break;
+	case ELuaValueType::Bool:
+		PinCategory = UEdGraphSchema_K2::PC_Boolean;
+		break;
+	case ELuaValueType::Integer:
+		PinCategory = UEdGraphSchema_K2::PC_Int;
+		break;
+	case ELuaValueType::Number:
+		PinCategory = UEdGraphSchema_K2::PC_Real;
+		break;
+	case ELuaValueType::String:
+		PinCategory = UEdGraphSchema_K2::PC_String;
+		break;
+	case ELuaValueType::UObject:
+		PinCategory = UEdGraphSchema_K2::PC_Object;
+		break;
+	default:
+		// return table
+	case ELuaValueType::Table:
+		PinCategory = UEdGraphSchema_K2::PC_Struct;
+		break;
+	}
+
+	return PinCategory;
+}
+
+ELuaValueType ULuaBlueprintFunctionLibrary::PinCategoryToLuaValueType(const FName& PinCategory)
+{
+	if (PinCategory == UEdGraphSchema_K2::PC_Wildcard)
+		return ELuaValueType::Nil;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Boolean)
+		return ELuaValueType::Bool;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Int)
+		return ELuaValueType::Integer;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Real)
+		return ELuaValueType::Number;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_String)
+		return ELuaValueType::String;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Object)
+		return ELuaValueType::UObject;
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Struct)
+		return ELuaValueType::Table;
+
+	// If none, just return a table
+	return ELuaValueType::Table;
+}
+
+void ULuaBlueprintFunctionLibrary::InitializeLuaSubCategoryObjects()
+{
+	int64 max = static_cast<int64>(ELuaSubCategoryObjectType::MAX);
+
+	// Initialize if we dont have all required enums
+	if (LuaSubCategoryObjects.Num() < max)
+	{
+		LuaSubCategoryObjects.Reset();
+		LuaSubCategoryObjects.Reserve(max);
+		for (int iEnum = 0; iEnum < max; iEnum++)
+		{
+			ELuaSubCategoryObjectType Enum = static_cast<ELuaSubCategoryObjectType>(iEnum);
+
+			// A single list for all sub objects
+			switch (Enum)
+			{
+			case ELuaSubCategoryObjectType::Table:
+				LuaSubCategoryObjects.Add(FLuaValue::StaticStruct());
+				break;
+			case ELuaSubCategoryObjectType::Vector:
+				LuaSubCategoryObjects.Add(
+					FindObjectChecked<UScriptStruct>(nullptr, TEXT("/Script/CoreUObject.Vector"))
+				);
+					break;
+			default:
+				LuaSubCategoryObjects.Add(nullptr);
+				break;
+			}
+		}
+	}
+}
+
+TWeakObjectPtr<UObject> ULuaBlueprintFunctionLibrary::ObjectTypeFromLuaSubCategoryObjectType(const ELuaValueType Type, const ELuaSubCategoryObjectType LuaSubCategoryObjectType)
+{
+	switch (Type)
+	{
+	case ELuaValueType::UObject:
+		return UObject::StaticClass();
+	case ELuaValueType::Table:
+		// Make sure our list is initialized
+		InitializeLuaSubCategoryObjects();
+
+		return LuaSubCategoryObjects[(int64)LuaSubCategoryObjectType];
+	default:
+		// Do Nothing
 		return nullptr;
 	}
 
-	if (LuaStateClass == ULuaState::StaticClass())
-	{
-		UE_LOG(LogLuaMachine, Error, TEXT("attempt to use LuaState Abstract class, please create a child of LuaState"));
-		return nullptr;
-	}
 
+}
 
-	ULuaState* NewLuaState = NewObject<ULuaState>((UObject*)GetTransientPackage(), LuaStateClass);
-	if (!NewLuaState)
-	{
-		return nullptr;
-	}
+ELuaSubCategoryObjectType ULuaBlueprintFunctionLibrary::ObjectTypeToLuaSubCategoryObjectType(const TWeakObjectPtr<UObject> InObject)
+{
+	// Make sure our list is initialized
+	InitializeLuaSubCategoryObjects();
 
-	return NewLuaState->GetLuaState(WorldContextObject->GetWorld());
+	// Find the matchin idx
+	auto idx = LuaSubCategoryObjects.IndexOfByPredicate(
+		[InObject](TWeakObjectPtr<UObject> InElement)
+				{
+					return InElement == InObject;
+				}
+		);
+
+	if (!LuaSubCategoryObjects.IsValidIndex(idx))
+		return ELuaSubCategoryObjectType::Nil;
+
+	ELuaSubCategoryObjectType Result = static_cast<ELuaSubCategoryObjectType>(idx);
+	return Result;
 }

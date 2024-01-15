@@ -5,13 +5,14 @@
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
 #include "LuaState.h"
+#include "NetworkObject.h"
 #include "LuaUserDataObject.generated.h"
 
 /**
  * 
  */
 UCLASS(Abstract, Blueprintable, HideDropdown)
-class LUAMACHINE_API ULuaUserDataObject : public UObject
+class LUAMACHINE_API ULuaUserDataObject : public UNetworkObject
 {
 	GENERATED_BODY()
 	
@@ -51,6 +52,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Lua", meta = (AutoCreateRefTerm = "Args"))
 	FLuaValue LuaCallFunction(const FString& Name, TArray<FLuaValue> Args, bool bGlobal);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua", meta = (AutoCreateRefTerm = "Args"))
+	FLuaValue LuaCallTableKey(FLuaValue InTable, FString Key, TArray<FLuaValue> Args);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua", meta = (AutoCreateRefTerm = "Args"))
+	FLuaValue LuaCallValue(FLuaValue Value, TArray<FLuaValue> Args);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
 	FLuaValue UFunctionToLuaValue(const FString& FunctionName);

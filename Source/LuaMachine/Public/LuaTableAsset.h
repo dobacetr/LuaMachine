@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "LuaState.h"
 #include "LuaValue.h"
 #include "LuaTableAsset.generated.h"
 

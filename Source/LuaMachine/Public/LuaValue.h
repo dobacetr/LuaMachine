@@ -17,6 +17,17 @@
  *
  */
 
+UENUM()
+enum class ELuaSubCategoryObjectType : uint8
+{
+	// Default to table so that we dont have problems with actualy table types
+	Table,
+	Vector,
+	// Nil specifies that the object type is not defined here. This can be expanded to support other structs; along with their proper conversion.
+	Nil,
+	MAX
+};
+
 UENUM(BlueprintType)
 enum class ELuaValueType : uint8
 {
@@ -50,6 +61,7 @@ struct LUAMACHINE_API FLuaValue
 		Integer = 0;
 		Number = 0;
 		MulticastScriptDelegate = nullptr;
+		SubCategoryObjectType = ELuaSubCategoryObjectType::Nil;
 	}
 
 	FLuaValue(const FLuaValue& SourceValue);
@@ -168,6 +180,9 @@ struct LUAMACHINE_API FLuaValue
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
 	FName FunctionName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
+	ELuaSubCategoryObjectType SubCategoryObjectType;
 
 	int LuaRef;
 

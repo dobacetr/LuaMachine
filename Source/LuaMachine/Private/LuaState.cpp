@@ -1,11 +1,12 @@
 // Copyright 2018-2023 - Roberto De Ioris
 
 #include "LuaState.h"
+#include "LuaBlueprintFunctionLibrary.h"
+#include "LuaTableAsset.h"
 #include "LuaComponent.h"
 #include "LuaUserDataObject.h"
 #include "LuaMachine.h"
 #include "LuaBlueprintPackage.h"
-#include "LuaBlueprintFunctionLibrary.h"
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION > 0
 #include "AssetRegistry/AssetRegistryModule.h"
 #else
@@ -16,6 +17,9 @@
 #include "Runtime/Core/Public/Misc/Paths.h"
 #include "Runtime/Core/Public/Serialization/BufferArchive.h"
 #include "Runtime/CoreUObject/Public/UObject/TextProperty.h"
+#include "Runtime/Core/Public/Math/BigInt.h"
+#include "Runtime/Core/Public/Misc/Base64.h"
+#include "Runtime/Core/Public/Misc/SecureHash.h"
 
 LUAMACHINE_API DEFINE_LOG_CATEGORY(LogLuaMachine);
 
@@ -261,7 +265,7 @@ ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 
 	if (LuaCodeAsset)
 	{
-		if (!RunCodeAsset(LuaCodeAsset))
+		if (!_RunCodeAsset(LuaCodeAsset))
 		{
 			if (bLogError)
 				LogError(LastError);
@@ -273,7 +277,7 @@ ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 
 	if (!LuaFilename.IsEmpty())
 	{
-		if (!RunFile(LuaFilename, true))
+		if (!_RunFile(LuaFilename, true))
 		{
 			if (bLogError)
 				LogError(LastError);
@@ -285,7 +289,7 @@ ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 
 	if (UserDataMetaTableFromCodeAsset)
 	{
-		if (!RunCodeAsset(UserDataMetaTableFromCodeAsset, 1))
+		if (!_RunCodeAsset(UserDataMetaTableFromCodeAsset, 1))
 		{
 			if (bLogError)
 				LogError(LastError);
@@ -312,6 +316,479 @@ ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 	return this;
 }
 
+FLuaValue ULuaState::CreateObject(UObject* InObject)
+{
+	FLuaValue LuaValue;
+	if (!InObject)
+		return LuaValue;
+
+	LuaValue = FLuaValue(InObject);
+	LuaValue.LuaState = this;
+	return LuaValue;
+}
+
+FLuaValue ULuaState::GetGlobal(const FString& Name)
+{
+	uint32 ItemsToPop = this->GetFieldFromTree(Name);
+	FLuaValue ReturnValue = this->ToLuaValue(-1);
+	this->Pop(ItemsToPop);
+	return ReturnValue;
+}
+
+void ULuaState::SetGlobal(const FString& Name, FLuaValue Value)
+{
+	this->SetFieldFromTree(Name, Value, true);
+}
+
+FLuaValue ULuaState::GetLuaComponentAsLuaValue(AActor* Actor)
+{
+	if (!Actor)
+		return FLuaValue();
+
+#if ENGINE_MAJOR_VERSION < 5 && ENGINE_MINOR_VERSION < 24
+	TArray<UActorComponent*> Components = Actor->GetComponentsByClass(ULuaComponent::StaticClass());
+#else
+	TArray<UActorComponent*> Components;
+	Actor->GetComponents(Components);
+#endif
+	for (UActorComponent* Component : Components)
+	{
+		ULuaComponent* LuaComponent = Cast<ULuaComponent>(Component);
+		if (LuaComponent)
+		{
+			if (LuaComponent->LuaState == this)
+			{
+				return FLuaValue(LuaComponent);
+			}
+		}
+	}
+
+	return FLuaValue();
+}
+
+FLuaValue ULuaState::GetLuaComponentByNameAsLuaValue(AActor* Actor, const FString& Name)
+{
+	if (!Actor)
+		return FLuaValue();
+
+#if ENGINE_MAJOR_VERSION < 5 && ENGINE_MINOR_VERSION < 24
+	TArray<UActorComponent*> Components = Actor->GetComponentsByClass(ULuaComponent::StaticClass());
+#else
+	TArray<UActorComponent*> Components;
+	Actor->GetComponents(Components);
+#endif
+	for (UActorComponent* Component : Components)
+	{
+		ULuaComponent* LuaComponent = Cast<ULuaComponent>(Component);
+		if (LuaComponent)
+		{
+			if (LuaComponent->LuaState == this && LuaComponent->GetName() == Name)
+			{
+				return FLuaValue(LuaComponent);
+			}
+		}
+	}
+
+	return FLuaValue();
+}
+
+FLuaValue ULuaState::GlobalCall(const FString& Name, TArray<FLuaValue> Args)
+{
+	FLuaValue ReturnValue;
+
+	int32 ItemsToPop = this->GetFieldFromTree(Name);
+
+	int NArgs = 0;
+	for (FLuaValue& Arg : Args)
+	{
+		this->FromLuaValue(Arg);
+		NArgs++;
+	}
+
+	this->PCall(NArgs, ReturnValue);
+
+	// we have the return value and the function has been removed, so we do not need to change ItemsToPop
+	this->Pop(ItemsToPop);
+
+	return ReturnValue;
+}
+
+TArray<FLuaValue> ULuaState::GlobalCallMulti(const FString& Name, TArray<FLuaValue> Args)
+{
+	TArray<FLuaValue> ReturnValue;
+
+	int32 ItemsToPop = this->GetFieldFromTree(Name);
+
+	int32 StackTop = this->GetTop();
+
+	int NArgs = 0;
+	for (FLuaValue& Arg : Args)
+	{
+		this->FromLuaValue(Arg);
+		NArgs++;
+	}
+
+	FLuaValue LastReturnValue;
+	if (this->PCall(NArgs, LastReturnValue, LUA_MULTRET))
+	{
+
+		int32 NumOfReturnValues = (this->GetTop() - StackTop) + 1;
+		if (NumOfReturnValues > 0)
+		{
+			for (int32 i = -1; i >= -(NumOfReturnValues); i--)
+			{
+				ReturnValue.Insert(this->ToLuaValue(i), 0);
+			}
+			this->Pop(NumOfReturnValues - 1);
+		}
+
+	}
+
+	// we have the return value and the function has been removed, so we do not need to change ItemsToPop
+	this->Pop(ItemsToPop);
+
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::GlobalCallValue(FLuaValue Value, TArray<FLuaValue> Args)
+{
+	FLuaValue ReturnValue;
+
+	this->FromLuaValue(Value);
+
+	int NArgs = 0;
+	for (FLuaValue& Arg : Args)
+	{
+		this->FromLuaValue(Arg);
+		NArgs++;
+	}
+
+	this->PCall(NArgs, ReturnValue);
+
+	this->Pop();
+
+	return ReturnValue;
+}
+
+TArray<FLuaValue> ULuaState::GlobalCallValueMulti(FLuaValue Value, TArray<FLuaValue> Args)
+{
+	TArray<FLuaValue> ReturnValue;
+
+	this->FromLuaValue(Value);
+
+	int32 StackTop = this->GetTop();
+
+	int NArgs = 0;
+	for (FLuaValue& Arg : Args)
+	{
+		this->FromLuaValue(Arg);
+		NArgs++;
+	}
+
+	FLuaValue LastReturnValue;
+	if (this->PCall(NArgs, LastReturnValue, LUA_MULTRET))
+	{
+
+		int32 NumOfReturnValues = (this->GetTop() - StackTop) + 1;
+		if (NumOfReturnValues > 0)
+		{
+			for (int32 i = -1; i >= -(NumOfReturnValues); i--)
+			{
+				ReturnValue.Insert(this->ToLuaValue(i), 0);
+			}
+			this->Pop(NumOfReturnValues - 1);
+		}
+
+	}
+
+	this->Pop();
+
+	return ReturnValue;
+}
+
+ULuaState* ULuaState::GetState(UObject* WorldContextObject)
+{
+	return FLuaMachineModule::Get().GetLuaState(this, WorldContextObject->GetWorld());
+}
+
+FLuaValue ULuaState::TablePack(TArray<FLuaValue> Values)
+{
+	FLuaValue ReturnValue;
+
+	ReturnValue = this->CreateLuaTable();
+
+	int32 Index = 1;
+
+	for (FLuaValue& Value : Values)
+	{
+		ReturnValue.SetFieldByIndex(Index++, Value);
+	}
+
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::TableMergePack(TArray<FLuaValue> Values1, TArray<FLuaValue> Values2)
+{
+	FLuaValue ReturnValue;
+
+	ReturnValue = this->CreateLuaTable();
+
+	int32 Index = 1;
+
+	for (FLuaValue& Value : Values1)
+	{
+		ReturnValue.SetFieldByIndex(Index++, Value);
+	}
+
+	for (FLuaValue& Value : Values2)
+	{
+		ReturnValue.SetFieldByIndex(Index++, Value);
+	}
+
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::TableFromMap(TMap<FString, FLuaValue> Map)
+{
+	FLuaValue ReturnValue;
+
+	ReturnValue = this->CreateLuaTable();
+
+	for (TPair<FString, FLuaValue>& Pair : Map)
+	{
+		ReturnValue.SetField(Pair.Key, Pair.Value);
+	}
+
+	return ReturnValue;
+}
+
+bool ULuaState::ValueFromJson(const FString& Json, FLuaValue& LuaValue)
+{
+	// default to nil
+	LuaValue = FLuaValue();
+
+	TSharedPtr<FJsonValue> JsonValue;
+	TSharedRef< TJsonReader<TCHAR> > JsonReader = TJsonReaderFactory<TCHAR>::Create(Json);
+	if (!FJsonSerializer::Deserialize(JsonReader, JsonValue))
+	{
+		return false;
+	}
+
+	LuaValue = FLuaValue::FromJsonValue(this, *JsonValue);
+	return true;
+}
+
+int64 ULuaState::ValueToPointer(FLuaValue LuaValue)
+{
+
+	this->FromLuaValue(LuaValue);
+	const void* Ptr = this->ToPointer(-1);
+	this->Pop();
+
+	return (int64)Ptr;
+}
+
+FString ULuaState::ValueToHexPointer(FLuaValue LuaValue)
+{
+	int64 Ptr = this->ValueToPointer(LuaValue);
+	if (FGenericPlatformProperties::IsLittleEndian())
+	{
+		uint8 BEPtr[8] =
+		{
+			(uint8)((Ptr >> 56) & 0xff),
+			(uint8)((Ptr >> 48) & 0xff),
+			(uint8)((Ptr >> 40) & 0xff),
+			(uint8)((Ptr >> 32) & 0xff),
+			(uint8)((Ptr >> 24) & 0xff),
+			(uint8)((Ptr >> 16) & 0xff),
+			(uint8)((Ptr >> 8) & 0xff),
+			(uint8)((Ptr) & 0xff),
+		};
+		return BytesToHex((const uint8*)BEPtr, sizeof(int64));
+	}
+	return BytesToHex((const uint8*)&Ptr, sizeof(int64));
+}
+
+int32 ULuaState::GetTop()
+{
+	return lua_gettop(L);
+}
+void ULuaState::DestroyState()
+{
+	FLuaMachineModule::Get().UnregisterLuaState(this);
+}
+
+FLuaValue ULuaState::RunFile(const FString& Filename, bool bIgnoreNonExistent)
+{
+	FLuaValue ReturnValue;
+
+	if (!this->_RunFile(Filename, bIgnoreNonExistent, 1))
+	{
+		if (this->bLogError)
+			this->LogError(this->LastError);
+		this->ReceiveLuaError(this->LastError);
+	}
+	else
+	{
+		ReturnValue = this->ToLuaValue(-1);
+	}
+
+	this->Pop();
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::RunNonContentFile(const FString& Filename, const bool bIgnoreNonExistent)
+{
+	FLuaValue ReturnValue;
+
+	if (!this->_RunFile(Filename, bIgnoreNonExistent, 1, true))
+	{
+		if (this->bLogError)
+			this->LogError(this->LastError);
+		this->ReceiveLuaError(this->LastError);
+	}
+	else
+	{
+		ReturnValue = this->ToLuaValue(-1);
+	}
+
+	this->Pop();
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::RunCodeAsset(ULuaCode* CodeAsset)
+{
+	FLuaValue ReturnValue;
+
+	if (!CodeAsset)
+		return ReturnValue;
+
+	if (!this->_RunCodeAsset(CodeAsset, 1))
+	{
+		if (this->bLogError)
+			this->LogError(this->LastError);
+		this->ReceiveLuaError(this->LastError);
+	}
+	else {
+		ReturnValue = this->ToLuaValue(-1);
+	}
+	this->Pop();
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::RunByteCode(const TArray<uint8>& ByteCode, const FString& CodePath)
+{
+	FLuaValue ReturnValue;
+
+	if (!this->RunCode(ByteCode, CodePath, 1))
+	{
+		if (this->bLogError)
+			this->LogError(this->LastError);
+		this->ReceiveLuaError(this->LastError);
+	}
+	else
+	{
+		ReturnValue = this->ToLuaValue(-1);
+	}
+	this->Pop();
+	return ReturnValue;
+}
+
+FLuaValue ULuaState::RunString(const FString& CodeString, FString CodePath)
+{
+	FLuaValue ReturnValue;
+	if (CodePath.IsEmpty())
+	{
+		CodePath = CodeString;
+	}
+
+	if (!RunCode(CodeString, CodePath, 1))
+	{
+		if (bLogError)
+			LogError(LastError);
+		ReceiveLuaError(LastError);
+	}
+	else
+	{
+		ReturnValue = ToLuaValue(-1);
+	}
+
+	Pop();
+	return ReturnValue;
+}
+
+void ULuaState::RunURL(UObject* WorldContextObject, const FString& URL, TMap<FString, FString> Headers, const FString& SecurityHeader, const FString& SignaturePublicExponent, const FString& SignatureModulus, FLuaHttpSuccess Completed)
+{
+	// Security CHECK
+	if (!SecurityHeader.IsEmpty() || !SignaturePublicExponent.IsEmpty() || !SignatureModulus.IsEmpty())
+	{
+		if (SecurityHeader.IsEmpty() || SignaturePublicExponent.IsEmpty() || SignatureModulus.IsEmpty())
+		{
+			UE_LOG(LogLuaMachine, Error, TEXT("For secure LuaRunURL() you need to specify the Security HTTP Header, the Signature Public Exponent and the Signature Modulus"));
+			return;
+		}
+	}
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+#else
+	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+#endif
+	HttpRequest->SetURL(URL);
+	for (TPair<FString, FString> Header : Headers)
+	{
+		HttpRequest->AppendToHeader(Header.Key, Header.Value);
+	}
+	HttpRequest->OnProcessRequestComplete().BindStatic(&ULuaState::HttpRequestDone, this, TWeakObjectPtr<UWorld>(WorldContextObject->GetWorld()), SecurityHeader, SignaturePublicExponent, SignatureModulus, Completed);
+	HttpRequest->ProcessRequest();
+}
+
+void ULuaState::HttpRequest(const FString& Method, const FString& URL, TMap<FString, FString> Headers, FLuaValue Body, FLuaValue Context, const FLuaHttpResponseReceived& ResponseReceived, const FLuaHttpError& Error)
+{
+
+#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 26
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = FHttpModule::Get().CreateRequest();
+#else
+	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
+#endif
+	HttpRequest->SetVerb(Method);
+	HttpRequest->SetURL(URL);
+	for (TPair<FString, FString> Header : Headers)
+	{
+		HttpRequest->AppendToHeader(Header.Key, Header.Value);
+	}
+	HttpRequest->SetContent(Body.ToBytes());
+
+	TSharedRef<FLuaSmartReference> ContextSmartRef = this->AddLuaSmartReference(Context);
+
+	HttpRequest->OnProcessRequestComplete().BindStatic(&ULuaState::HttpGenericRequestDone, TWeakPtr<FLuaSmartReference>(ContextSmartRef), ResponseReceived, Error);
+	HttpRequest->ProcessRequest();
+}
+
+int32 ULuaState::GetUsedMemory()
+{
+	return this->GC(LUA_GCCOUNT);
+}
+
+void ULuaState::GCCollect()
+{
+	this->GC(LUA_GCCOLLECT);
+}
+
+void ULuaState::GCStop()
+{
+	this->GC(LUA_GCSTOP);
+}
+
+void ULuaState::GCRestart()
+{
+	this->GC(LUA_GCRESTART);
+}
+
+FLuaValue ULuaState::TableAssetToLuaTable(ULuaTableAsset* TableAsset)
+{
+	return TableAsset->ToLuaTable(this);
+}
+
 FLuaValue ULuaState::GetLuaBlueprintPackageTable(const FString& PackageName)
 {
 	if (!LuaBlueprintPackages.Contains(PackageName))
@@ -322,7 +799,7 @@ FLuaValue ULuaState::GetLuaBlueprintPackageTable(const FString& PackageName)
 	return LuaBlueprintPackages[PackageName]->SelfTable;
 }
 
-bool ULuaState::RunCodeAsset(ULuaCode* CodeAsset, int NRet)
+bool ULuaState::_RunCodeAsset(ULuaCode* CodeAsset, int NRet)
 {
 
 	if (CodeAsset->bCooked && CodeAsset->bCookAsBytecode)
@@ -339,7 +816,7 @@ bool ULuaState::RunCodeAsset(ULuaCode* CodeAsset, int NRet)
 
 }
 
-bool ULuaState::RunFile(const FString& Filename, bool bIgnoreNonExistent, int NRet, bool bNonContentDirectory)
+bool ULuaState::_RunFile(const FString& Filename, bool bIgnoreNonExistent, int NRet, bool bNonContentDirectory)
 {
 	TArray<uint8> Code;
 	FString AbsoluteFilename = FPaths::Combine(FPaths::ProjectContentDir(), Filename);
@@ -524,7 +1001,7 @@ void ULuaState::FromLuaValue(FLuaValue& LuaValue, UObject* CallContext, lua_Stat
 				UE_LOG(LogLuaMachine, Warning, TEXT("%s has no associated LuaState"), *LuaComponent->GetFullName());
 			}
 			// ensure we are in the same LuaState
-			else if (LuaComponent->LuaState == GetClass())
+			else if (LuaComponent->LuaState == this)
 			{
 				SetupAndAssignUserDataMetatable(LuaComponent, LuaComponent->Metatable, State);
 			}
@@ -576,33 +1053,25 @@ void ULuaState::FromLuaValue(FLuaValue& LuaValue, UObject* CallContext, lua_Stat
 		}
 		if (CallContext)
 		{
+			// Try to find the find within this context
 			UObject* FunctionOwner = CallContext;
-			if (ULuaComponent* LuaComponent = Cast<ULuaComponent>(CallContext))
-			{
-				FunctionOwner = LuaComponent->GetOwner();
-			}
+			UFunction* Function = FunctionOwner->FindFunction(LuaValue.FunctionName);
 
-			if (FunctionOwner)
+			if (Function)
 			{
-				UFunction* Function = FunctionOwner->FindFunction(LuaValue.FunctionName);
-				if (Function)
-				{
-					// cache it for context-less calls
-					LuaValue.Object = CallContext;
-					FLuaUserData* LuaCallContext = (FLuaUserData*)lua_newuserdata(State, sizeof(FLuaUserData));
-					LuaCallContext->Type = ELuaValueType::UFunction;
-					LuaCallContext->Context = CallContext;
-					LuaCallContext->Function = Function;
-					lua_newtable(State);
-					lua_pushcfunction(State, bRawLuaFunctionCall ? ULuaState::MetaTableFunction__rawcall : ULuaState::MetaTableFunction__call);
-					lua_setfield(State, -2, "__call");
-					lua_setmetatable(State, -2);
-					return;
-				}
+				// cache it for context-less calls
+				LuaValue.Object = CallContext;
+				FLuaUserData* LuaCallContext = (FLuaUserData*)lua_newuserdata(State, sizeof(FLuaUserData));
+				LuaCallContext->Type = ELuaValueType::UFunction;
+				LuaCallContext->Context = CallContext;
+				LuaCallContext->Function = Function;
+				lua_newtable(State);
+				lua_pushcfunction(State, bRawLuaFunctionCall ? ULuaState::MetaTableFunction__rawcall : ULuaState::MetaTableFunction__call);
+				lua_setfield(State, -2, "__call");
+				lua_setmetatable(State, -2);
+				return;
 			}
 		}
-		// no function found
-		lua_pushnil(State);
 		break;
 	case ELuaValueType::MulticastDelegate:
 		// if no context is assigned to the function, own it !
@@ -715,10 +1184,6 @@ FLuaValue ULuaState::ToLuaValue(int Index, lua_State* State)
 	return LuaValue;
 }
 
-int32 ULuaState::GetTop()
-{
-	return lua_gettop(L);
-}
 
 int ULuaState::MetaTableFunctionUserData__index(lua_State* L)
 {
@@ -759,7 +1224,42 @@ int ULuaState::MetaTableFunctionUserData__index(lua_State* L)
 		FLuaValue* LuaValue = TablePtr->Find(Key);
 		if (LuaValue)
 		{
+			if (LuaValue->Object)
+			{
+				// First time, we need to determine the context
+				if (LuaValue->Object->IsA<UClass>())
+				{
+					UObject* newContext = Context;
+					UClass* desiredClass = Cast<UClass>(LuaValue->Object);
+					bool bDesiredClass = newContext->IsA(desiredClass);
+					bool bIsALevel = newContext->IsA<ULevel>();
+					while (
+						!bIsALevel &&
+						!bDesiredClass
+						)
+
+					{
+						newContext = newContext->GetOuter();
+						bDesiredClass = newContext->IsA(desiredClass);
+						bIsALevel = newContext->IsA<ULevel>();
+					}
+
+					if (bDesiredClass)
+					{
+						LuaValue->Object = newContext;
+					}
+				}
+				
+				// Then we can use the stored context
+				if ( !LuaValue->Object->IsA<UClass>())
+				{
+					LuaState->FromLuaValue(*LuaValue, LuaValue->Object, L);
+
+					return 1;
+				}
+			}
 			LuaState->FromLuaValue(*LuaValue, Context, L);
+
 			return 1;
 
 		}
@@ -775,7 +1275,7 @@ int ULuaState::MetaTableFunctionUserData__index(lua_State* L)
 	if (LuaUserDataObject)
 	{
 		FLuaValue MetaIndexReturnValue = LuaUserDataObject->ReceiveLuaMetaIndex(Key);
-		LuaState->FromLuaValue(MetaIndexReturnValue, MetaIndexReturnValue.Object ? MetaIndexReturnValue.Object : Context, L);
+		LuaState->FromLuaValue(MetaIndexReturnValue, Context, L);
 		return 1;
 	}
 
@@ -1466,7 +1966,7 @@ int ULuaState::TableFunction_package_loader_codeasset(lua_State * L)
 		ULuaCode* LuaCode = Cast<ULuaCode>(AssetData.GetAsset());
 		if (LuaCode)
 		{
-			if (!LuaState->RunCodeAsset(LuaCode, 1))
+			if (!LuaState->_RunCodeAsset(LuaCode, 1))
 			{
 				return luaL_error(L, "%s", lua_tostring(L, -1));
 			}
@@ -1484,7 +1984,7 @@ int ULuaState::TableFunction_package_loader_asset(lua_State * L)
 	// use the second (sanitized by the loader) argument
 	const FString Key = ANSI_TO_TCHAR(lua_tostring(L, 2));
 
-	if (LuaState->RunFile(Key, true, 1))
+	if (LuaState->_RunFile(Key, true, 1))
 	{
 		return 1;
 	}
@@ -1562,7 +2062,7 @@ int ULuaState::TableFunction_package_preload(lua_State * L)
 	ULuaCode** LuaCodePtr = LuaState->RequireTable.Find(Key);
 	if (!LuaCodePtr)
 	{
-		if (LuaState->bAddProjectContentDirToPackagePath && LuaState->RunFile(Key + ".lua", true, 1))
+		if (LuaState->bAddProjectContentDirToPackagePath && LuaState->_RunFile(Key + ".lua", true, 1))
 		{
 			return 1;
 		}
@@ -1571,7 +2071,7 @@ int ULuaState::TableFunction_package_preload(lua_State * L)
 		// now search in additional paths
 		for (FString AdditionalPath : LuaState->AppendProjectContentDirSubDir)
 		{
-			if (LuaState->RunFile(AdditionalPath / Key + ".lua", true, 1))
+			if (LuaState->_RunFile(AdditionalPath / Key + ".lua", true, 1))
 			{
 				return 1;
 			}
@@ -1587,7 +2087,7 @@ int ULuaState::TableFunction_package_preload(lua_State * L)
 		return luaL_error(L, "LuaCodeAsset not set for package %s", TCHAR_TO_ANSI(*Key));
 	}
 
-	if (!LuaState->RunCodeAsset(LuaCode, 1))
+	if (!LuaState->_RunCodeAsset(LuaCode, 1))
 	{
 		return luaL_error(L, "%s", lua_tostring(L, -1));
 	}
@@ -1745,7 +2245,6 @@ void ULuaState::SetFieldFromTree(const FString & Tree, FLuaValue & Value, bool b
 	SetField(-2, TCHAR_TO_ANSI(*Parts.Last()));
 	Pop(ItemsToPop - 1);
 }
-
 
 void ULuaState::NewUObject(UObject * Object, lua_State * State)
 {
@@ -1940,6 +2439,7 @@ FLuaValue ULuaState::CreateLuaTable()
 	FLuaValue NewTable;
 	NewTable.Type = ELuaValueType::Table;
 	NewTable.LuaState = this;
+	NewTable.SubCategoryObjectType = ELuaSubCategoryObjectType::Table;
 	FromLuaValue(NewTable);
 	Pop();
 	return NewTable;
@@ -2608,7 +3108,7 @@ void ULuaState::SetupAndAssignUserDataMetatable(UObject * Context, TMap<FString,
 	lua_setmetatable(State, -2);
 }
 
-FLuaValue ULuaState::NewLuaUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUserDataObjectClass, bool bTrackObject)
+FLuaValue ULuaState::CreateUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUserDataObjectClass, bool bTrackObject)
 {
 	ULuaUserDataObject* LuaUserDataObject = NewObject<ULuaUserDataObject>(this, LuaUserDataObjectClass);
 	if (LuaUserDataObject)
@@ -2761,25 +3261,127 @@ void ULuaState::AddLuaValueToLuaState(const FString & Name, FLuaValue LuaValue)
 	SetFieldFromTree(Name, LuaValue, true);
 }
 
-FLuaValue ULuaState::RunString(const FString & CodeString, FString CodePath)
+void ULuaState::HttpRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, ULuaState* LuaState, TWeakObjectPtr<UWorld> World, const FString SecurityHeader, const FString SignaturePublicExponent, const FString SignatureModulus, FLuaHttpSuccess Completed)
 {
 	FLuaValue ReturnValue;
-	if (CodePath.IsEmpty())
+	int32 StatusCode = -1;
+
+	if (!bWasSuccessful)
 	{
-		CodePath = CodeString;
+		UE_LOG(LogLuaMachine, Error, TEXT("HTTP session failed for \"%s %s\""), *Request->GetVerb(), *Request->GetURL());
 	}
 
-	if (!RunCode(CodeString, CodePath, 1))
+	else if (!World.IsValid())
 	{
-		if (bLogError)
-			LogError(LastError);
-		ReceiveLuaError(LastError);
+		UE_LOG(LogLuaMachine, Error, TEXT("Unable to access LuaState as the World object is no more available (\"%s %s\")"), *Request->GetVerb(), *Request->GetURL());
 	}
 	else
 	{
-		ReturnValue = ToLuaValue(-1);
+		// Check signature
+		if (!SecurityHeader.IsEmpty())
+		{
+			// check code size
+			if (Response->GetContentLength() <= 0)
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Content Size"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+			FString EncryptesSignatureBase64 = Response->GetHeader(SecurityHeader);
+			if (EncryptesSignatureBase64.IsEmpty())
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Security HTTP Header"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+
+			const uint32 KeySize = 64;
+
+			TArray<uint8> Signature;
+			FBase64::Decode(EncryptesSignatureBase64, Signature);
+
+			if (Signature.Num() != KeySize)
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+			TEncryptionInt SignatureValue = TEncryptionInt((uint32*)&Signature[0]);
+
+			TArray<uint8> PublicExponent;
+			FBase64::Decode(SignaturePublicExponent, PublicExponent);
+			if (PublicExponent.Num() != KeySize)
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature Public Exponent"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+
+			TArray<uint8> Modulus;
+			FBase64::Decode(SignatureModulus, Modulus);
+			if (Modulus.Num() != KeySize)
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Invalid Signature Modulus"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+
+			TEncryptionInt PublicKey = TEncryptionInt((uint32*)&PublicExponent[0]);
+			TEncryptionInt ModulusValue = TEncryptionInt((uint32*)&Modulus[0]);
+
+			TEncryptionInt ShaHash;
+			FSHA1::HashBuffer(Response->GetContent().GetData(), Response->GetContentLength(), (uint8*)&ShaHash);
+
+			TEncryptionInt DecryptedSignature = FEncryption::ModularPow(SignatureValue, PublicKey, ModulusValue);
+			if (DecryptedSignature != ShaHash)
+			{
+				UE_LOG(LogLuaMachine, Error, TEXT("[Security] Signature check failed"));
+				Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+				return;
+			}
+		}
+
+		ReturnValue = LuaState->RunString(Response->GetContentAsString());
+		StatusCode = Response->GetResponseCode();
 	}
 
-	Pop();
-	return ReturnValue;
+	Completed.ExecuteIfBound(ReturnValue, bWasSuccessful, StatusCode);
+}
+
+void ULuaState::HttpGenericRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, TWeakPtr<FLuaSmartReference> Context, FLuaHttpResponseReceived ResponseReceived, FLuaHttpError Error)
+{
+	// if the context is invalid, the LuaState is already dead
+	if (!Context.IsValid())
+		return;
+
+	TSharedRef<FLuaSmartReference> SmartContext = Context.Pin().ToSharedRef();
+
+	SmartContext->LuaState->RemoveLuaSmartReference(SmartContext);
+
+	if (!bWasSuccessful)
+	{
+		Error.ExecuteIfBound(SmartContext->Value);
+		return;
+	}
+
+	FLuaValue StatusCode = FLuaValue(Response->GetResponseCode());
+	FLuaValue Headers = SmartContext->LuaState->CreateLuaTable();
+	for (auto HeaderLine : Response->GetAllHeaders())
+	{
+		int32 Index;
+		if (HeaderLine.Len() > 2 && HeaderLine.FindChar(':', Index))
+		{
+			FString Key;
+			if (Index > 0)
+				Key = HeaderLine.Left(Index);
+			FString Value = HeaderLine.Right(HeaderLine.Len() - (Index + 2));
+			Headers.SetField(Key, FLuaValue(Value));
+		}
+	}
+	FLuaValue Content = FLuaValue(Response->GetContent());
+	FLuaValue LuaHttpResponse = SmartContext->LuaState->CreateLuaTable();
+	LuaHttpResponse.SetFieldByIndex(1, StatusCode);
+	LuaHttpResponse.SetFieldByIndex(2, Headers);
+	LuaHttpResponse.SetFieldByIndex(3, Content);
+	ResponseReceived.ExecuteIfBound(SmartContext->Value, LuaHttpResponse);
 }

@@ -28,7 +28,7 @@ void ULuaComponent::OnRegister()
 	{
 		for (const FString& GlobalName : GlobalNames)
 		{
-			ULuaBlueprintFunctionLibrary::LuaSetGlobal(GetWorld(), LuaState, GlobalName, FLuaValue(this));
+			LuaState->SetGlobal(GlobalName, FLuaValue(this));
 		}
 	}
 }
@@ -36,13 +36,13 @@ void ULuaComponent::OnRegister()
 // Called when the game starts
 void ULuaComponent::BeginPlay()
 {
-	Super::BeginPlay();
-
-	if (!bLazy)
-		FLuaMachineModule::Get().GetLuaState(LuaState, GetWorld());
-
 	// ...
+	if (!bLazy && !LuaState)
+	{
+		LuaState = this->LuaComponentGetState();
+	}
 
+	Super::BeginPlay();
 }
 
 // Called every frame
@@ -55,6 +55,16 @@ void ULuaComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorCo
 
 ULuaState* ULuaComponent::LuaComponentGetState()
 {
+	if (bUseSingletonState)
+	{
+		return FLuaMachineModule::Get().GetLuaState(LuaStateClass, GetWorld());
+	}
+
+	if (!LuaState)
+	{
+		return ULuaBlueprintFunctionLibrary::CreateDynamicLuaState(GetWorld(), LuaStateClass);
+	}
+
 	return FLuaMachineModule::Get().GetLuaState(LuaState, GetWorld());
 }
 
@@ -93,6 +103,14 @@ void ULuaComponent::LuaSetField(const FString& Name, FLuaValue Value)
 	// remove UObject
 	L->Pop();
 
+}
+
+void ULuaComponent::SetLuaState(ULuaState* NewLuaState)
+{
+	if (!NewLuaState)
+		return;
+
+	this->LuaState = NewLuaState;
 }
 
 FLuaValue ULuaComponent::LuaCallFunction(const FString& Name, TArray<FLuaValue> Args, bool bGlobal)

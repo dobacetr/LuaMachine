@@ -7,10 +7,11 @@
 #include "ThirdParty/lua/lua.hpp"
 #include "LuaValue.h"
 #include "LuaCode.h"
-#include "Runtime/Core/Public/Containers/Queue.h"
-#include "Runtime/Launch/Resources/Version.h"
 #include "LuaDelegate.h"
 #include "LuaCommandExecutor.h"
+#include "Runtime/Core/Public/Containers/Queue.h"
+#include "Runtime/Launch/Resources/Version.h"
+#include "Runtime/Online/HTTP/Public/Http.h"
 #include "LuaState.generated.h"
 
 LUAMACHINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLuaMachine, Log, All);
@@ -19,7 +20,9 @@ LUAMACHINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLuaMachine, Log, All);
  *
  */
 
-class ULuaBlueprintPackage;
+DECLARE_DYNAMIC_DELEGATE_ThreeParams(FLuaHttpSuccess, FLuaValue, ReturnValue, bool, bWasSuccessful, int32, StatusCode);
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FLuaHttpResponseReceived, FLuaValue, Context, FLuaValue, Response);
+DECLARE_DYNAMIC_DELEGATE_OneParam(FLuaHttpError, FLuaValue, Context);
 
 struct FLuaUserData
 {
@@ -148,6 +151,7 @@ struct FLuaSmartReference : public TSharedFromThis<FLuaSmartReference>
 
 
 class ULuaUserDataObject;
+class ULuaBlueprintPackage;
 
 UCLASS(Abstract, Blueprintable, HideDropdown)
 class LUAMACHINE_API ULuaState : public UObject
@@ -196,6 +200,98 @@ public:
 	UPROPERTY(EditAnywhere, meta = (DisplayName = "UserData MetaTable from CodeAsset"), Category = "Lua")
 	ULuaCode* UserDataMetaTableFromCodeAsset;
 
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue CreateObject(UObject* InObject);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue GetGlobal(const FString& Name);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void SetGlobal(const FString& Name, FLuaValue Value);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	FLuaValue GetLuaComponentAsLuaValue(AActor* Actor);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	FLuaValue GetLuaComponentByNameAsLuaValue(AActor* Actor, const FString& Name);
+
+	UFUNCTION(BlueprintCallable, meta = (AutoCreateRefTerm = "Args"), Category = "Lua")
+	FLuaValue GlobalCall(const FString& Name, TArray<FLuaValue> Args);
+
+	UFUNCTION(BlueprintCallable, meta = (AutoCreateRefTerm = "Args"), Category = "Lua")
+	TArray<FLuaValue> GlobalCallMulti(const FString& Name, TArray<FLuaValue> Args);
+
+	UFUNCTION(BlueprintCallable, meta = (AutoCreateRefTerm = "Args"), Category = "Lua")
+	FLuaValue GlobalCallValue(FLuaValue Value, TArray<FLuaValue> Args);
+
+	UFUNCTION(BlueprintCallable, meta = (AutoCreateRefTerm = "Args"), Category = "Lua")
+	TArray<FLuaValue> GlobalCallValueMulti(FLuaValue Value, TArray<FLuaValue> Args);
+
+	UFUNCTION(BlueprintPure, meta = (WorldContext = "WorldContextObject"), Category = "Lua")
+	ULuaState* GetState(UObject* WorldContextObject);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue TablePack(TArray<FLuaValue> Values);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue TableMergePack(TArray<FLuaValue> Values1, TArray<FLuaValue> Values2);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue TableFromMap(TMap<FString, FLuaValue> Map);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	bool ValueFromJson(const FString& Json, FLuaValue& Value);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	int64 ValueToPointer(FLuaValue LuaValue);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	FString ValueToHexPointer(FLuaValue LuaValue);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	int32 GetTop();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void DestroyState();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue RunFile(const FString& Filename, bool bIgnoreNonExistent);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue RunNonContentFile(const FString& Filename, const bool bIgnoreNonExistent);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue RunCodeAsset(ULuaCode* CodeAsset);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue RunByteCode(const TArray<uint8>& ByteCode, const FString& CodePath);
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue RunString(const FString& CodeString, FString CodePath = "");
+
+	/* Make an HTTP GET request to the specified URL to download the Lua script to run */
+	UFUNCTION(BlueprintCallable, meta = (WorldContext = "WorldContextObject", AutoCreateRefTerm = "Headers"), Category = "Lua")
+	void RunURL(UObject* WorldContextObject, const FString& URL, TMap<FString, FString> Headers, const FString& SecurityHeader, const FString& SignaturePublicExponent, const FString& SignatureModulus, FLuaHttpSuccess Completed);
+
+	/* Make an HTTP GET request to the specified URL to download the Lua script to run */
+	UFUNCTION(BlueprintCallable, meta = (AutoCreateRefTerm = "Headers,Error,ResponseReceived"), Category = "Lua")
+	void HttpRequest(const FString& Method, const FString& URL, TMap<FString, FString> Headers, FLuaValue Body, FLuaValue Context, const FLuaHttpResponseReceived& ResponseReceived, const FLuaHttpError& Error);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
+	int32 GetUsedMemory();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void GCCollect();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void GCStop();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void GCRestart();
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	FLuaValue TableAssetToLuaTable(ULuaTableAsset* TableAsset);
+
 	UFUNCTION(BlueprintNativeEvent, Category = "Lua", meta = (DisplayName = "Lua Error"))
 	void ReceiveLuaError(const FString& Message);
 
@@ -214,7 +310,7 @@ public:
 	virtual void ReceiveLuaCountHook(const FLuaDebug& LuaDebug);
 
 	UFUNCTION(BlueprintCallable, Category = "Lua")
-	FLuaValue NewLuaUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUserDataObjectClass, bool bTrackObject=true);
+	FLuaValue CreateUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUserDataObjectClass, bool bTrackObject=true);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
 	FLuaDebug LuaGetInfo(const int32 Level);
@@ -299,8 +395,6 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "Lua", meta = (DisplayName = "Lua State Initialized"))
 	void ReceiveLuaStateInitialized();
 
-	int32 GetTop();
-
 	FString LastError;
 
 	int32 InceptionLevel;
@@ -366,14 +460,13 @@ public:
 	bool RunCode(const TArray<uint8>& Code, const FString& CodePath, int NRet = 0);
 	bool RunCode(const FString& Code, const FString& CodePath, int NRet = 0);
 
-	bool RunCodeAsset(ULuaCode* CodeAsset, int NRet = 0);
 
+	UFUNCTION(BlueprintCallable, Category = "Lua")
 	FLuaValue CreateLuaTable();
+
 	FLuaValue CreateLuaThread(FLuaValue Value);
 
 	FLuaValue CreateLuaLazyTable();
-
-	bool RunFile(const FString& Filename, bool bIgnoreNonExistent, int NRet = 0, bool bNonContentDirectory=false);
 
 	static int MetaTableFunctionUserData__index(lua_State* L);
 	static int MetaTableFunctionUserData__newindex(lua_State* L);
@@ -491,9 +584,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Lua")
 	void AddLuaValueToLuaState(const FString& Name, FLuaValue LuaValue);
 
-	UFUNCTION(BlueprintCallable, Category = "Lua")
-	FLuaValue RunString(const FString& CodeString, FString CodePath);
-
 protected:
 	lua_State* L;
 	bool bDisabled;
@@ -510,6 +600,13 @@ protected:
 	TMap<TWeakObjectPtr<UObject>, FLuaDelegateGroup> LuaDelegatesMap;
 
 	FLuaCommandExecutor LuaConsole;
+private:
+	bool _RunFile(const FString& Filename, bool bIgnoreNonExistent, int NRet = 0, bool bNonContentDirectory = false);
+	bool _RunCodeAsset(ULuaCode* CodeAsset, int NRet = 0);
+
+	static void HttpRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, ULuaState* LuaState, TWeakObjectPtr<UWorld> World, const FString SecurityHeader, const FString SignaturePublicExponent, const FString SignatureModulus, FLuaHttpSuccess Completed);
+	static void HttpGenericRequestDone(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, TWeakPtr<FLuaSmartReference> Context, FLuaHttpResponseReceived ResponseReceived, FLuaHttpError Error);
+
 };
 
 #define LUACFUNCTION(FuncClass, FuncName, NumRetValues, NumArgs) static int FuncName ## _C(lua_State* L)\

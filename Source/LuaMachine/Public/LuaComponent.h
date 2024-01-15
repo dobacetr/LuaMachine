@@ -28,8 +28,12 @@ public:
 	// Called every frame
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
-	TSubclassOf<ULuaState> LuaState;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(ExposeOnSpawn="true"), Category = "Lua")
+	ULuaState* LuaState;
+	
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Lua")
+	TSubclassOf<ULuaState> LuaStateClass;
+
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
 	TMap<FString, FLuaValue> Table;
@@ -40,6 +44,9 @@ public:
 	UPROPERTY(EditAnywhere, Category="Lua")
 	bool bLazy;
 
+	UPROPERTY(EditAnywhere, Category = "Lua")
+	bool bUseSingletonState;
+
 	UPROPERTY(EditAnywhere, Category="Lua")
 	bool bLogError;
 
@@ -48,6 +55,9 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Lua")
 	TArray<FString> GlobalNames;
+
+	UFUNCTION(BlueprintCallable, Category = "Lua")
+	void SetLuaState(ULuaState* NewLuaState);
 
 	UFUNCTION(BlueprintCallable, Category="Lua", meta = (AutoCreateRefTerm = "Args"))
 	FLuaValue LuaCallFunction(const FString& Name, TArray<FLuaValue> Args, bool bGlobal);

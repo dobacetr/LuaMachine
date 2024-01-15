@@ -179,3 +179,55 @@ FLuaValue ULuaUserDataObject::LuaCallFunction(const FString& Name, TArray<FLuaVa
 
 	return ReturnValue;
 }
+
+FLuaValue ULuaUserDataObject::LuaCallTableKey(FLuaValue InTable, FString Key, TArray<FLuaValue> Args)
+{
+	FLuaValue ReturnValue;
+
+	if (InTable.Type != ELuaValueType::Table)
+		return ReturnValue;
+
+	ULuaState* L = InTable.LuaState.Get();
+	if (!L)
+		return ReturnValue;
+
+	FLuaValue Value = InTable.GetField(Key);
+	if (Value.Type == ELuaValueType::Nil)
+		return ReturnValue;
+
+	return LuaCallValue(Value, Args);
+}
+
+FLuaValue ULuaUserDataObject::LuaCallValue(FLuaValue Value, TArray<FLuaValue> Args)
+{
+	FLuaValue ReturnValue;
+
+	ULuaState* L = Value.LuaState.Get();
+	if (!L)
+		return ReturnValue;
+
+	// push function
+	L->FromLuaValue(Value);
+	// push component pointer as userdata
+	L->NewUObject(this, nullptr);
+	L->SetupAndAssignUserDataMetatable(this, Metatable, nullptr);
+
+	int NArgs = 1;
+	for (FLuaValue& Arg : Args)
+	{
+		L->FromLuaValue(Arg);
+		NArgs++;
+	}
+
+	if (!L->PCall(NArgs, ReturnValue))
+	{
+		if (L->InceptionLevel == 0)
+		{
+			L->LogError(L->LastError);
+		}
+	}
+
+	L->Pop();
+
+	return ReturnValue;
+}

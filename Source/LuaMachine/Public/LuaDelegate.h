@@ -7,6 +7,8 @@
 #include "UObject/NoExportTypes.h"
 #include "LuaDelegate.generated.h"
 
+class ULuaState;
+
 /**
  * 
  */

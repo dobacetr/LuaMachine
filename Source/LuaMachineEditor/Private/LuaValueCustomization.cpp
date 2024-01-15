@@ -50,6 +50,7 @@ void FLuaValueCustomization::LuaFunctionChanged(TSharedPtr<FString> Value, ESele
 		return;
 
 	UClass* ObjectClass = Objects[0]->GetClass();
+	UObject* Object = Objects[0];
 
 	ULuaComponent* LuaComponent = Cast<ULuaComponent>(Objects[0]);
 	if (LuaComponent)
@@ -58,6 +59,7 @@ void FLuaValueCustomization::LuaFunctionChanged(TSharedPtr<FString> Value, ESele
 		if (Actor)
 		{
 			ObjectClass = Actor->GetClass();
+			Object = Actor;
 		}
 		else
 		{
@@ -65,8 +67,33 @@ void FLuaValueCustomization::LuaFunctionChanged(TSharedPtr<FString> Value, ESele
 			if (BlueprintClass)
 			{
 				ObjectClass = BlueprintClass;
+				Object = LuaComponent->GetOuter();
 			}
 		}
+		Object = ObjectClass;
+		TArray<FString> keys;
+		LuaComponent->Table.GenerateKeyArray(keys);
+
+		TArray<FLuaValue> values;
+		LuaComponent->Table.GenerateValueArray(values);
+
+		FString desiredString;
+		PropertyHandle->GetValue(desiredString);
+		FName desiredName(desiredString);
+		int idx = 0;
+		for (FLuaValue value : values)
+		{
+			if (value.FunctionName == desiredName)
+			{
+				break;
+			}
+			idx++;
+			
+		}
+
+		if( keys.IsValidIndex(idx) )
+			LuaComponent->Table[keys[idx]].Object = Object;
+		
 	}
 
 
@@ -74,6 +101,7 @@ void FLuaValueCustomization::LuaFunctionChanged(TSharedPtr<FString> Value, ESele
 	if (FoundFunction)
 	{
 		PropertyHandle->SetValue(FoundFunction->GetName());
+		
 	}
 }
 
@@ -104,6 +132,10 @@ void FLuaValueCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> Prope
 	TSharedPtr<IPropertyHandle> LuaValueObjectProperty = PropertyHandle->GetChildHandle(FName(TEXT("Object")));
 	IDetailPropertyRow& PropertyObjectRow = Builder.AddProperty(LuaValueObjectProperty.ToSharedRef());
 	PropertyObjectRow.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateRaw(this, &FLuaValueCustomization::IsPropertyVisible, PropertyHandle, ELuaValueType::UObject)));
+
+	TSharedPtr<IPropertyHandle> LuaValueObjectTypeProperty = PropertyHandle->GetChildHandle(FName(TEXT("SubCategoryObjectType")));
+	IDetailPropertyRow& PropertyObjectTypeRow = Builder.AddProperty(LuaValueObjectTypeProperty.ToSharedRef());
+	PropertyObjectTypeRow.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateRaw(this, &FLuaValueCustomization::IsPropertyVisible, PropertyHandle, ELuaValueType::Table)));
 
 	TSharedPtr<IPropertyHandle> LuaValueFunctionProperty = PropertyHandle->GetChildHandle(FName(TEXT("FunctionName")));
 
@@ -213,6 +245,9 @@ void FLuaValueCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> Prope
 
 
 	Builder.AddCustomRow(FText::FromString(TEXT("Function"))).ValueContent()[
-		SNew(STextComboBox).OptionsSource(&ValidLuaFunctions).OnSelectionChanged_Raw(this, &FLuaValueCustomization::LuaFunctionChanged, LuaValueFunctionProperty.ToSharedRef()).InitiallySelectedItem(CurrentSelectedFunction)
+		SNew(STextComboBox).OptionsSource(&ValidLuaFunctions).OnSelectionChanged_Raw(
+			this,
+			&FLuaValueCustomization::LuaFunctionChanged,
+			LuaValueFunctionProperty.ToSharedRef()).InitiallySelectedItem(CurrentSelectedFunction)
 	].Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateRaw(this, &FLuaValueCustomization::IsPropertyVisible, PropertyHandle, ELuaValueType::UFunction)));
 }

@@ -44,6 +44,7 @@ public class LuaMachine : ModuleRules
                 "SlateCore",
                 "UMG",
                 "InputCore",
+                "BlueprintGraph"
 				// ... add private dependencies that you statically link with here ...	
 			}
             );

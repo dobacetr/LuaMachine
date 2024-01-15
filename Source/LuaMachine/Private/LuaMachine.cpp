@@ -68,6 +68,7 @@ void FLuaMachineModule::ShutdownModule()
 void FLuaMachineModule::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObjects(LuaStates);
+	Collector.AddReferencedObjects(LuaInstancedStates);
 }
 
 void FLuaMachineModule::CleanupLuaStates(bool bIsSimulating)
@@ -76,6 +77,7 @@ void FLuaMachineModule::CleanupLuaStates(bool bIsSimulating)
 	LuaStates.GetKeys(LuaStatesKeys);
 
 	TMap<TSubclassOf<ULuaState>, ULuaState*> PersistentLuaStates;
+	TArray<ULuaState*> PersistentInstancedLuaStates;
 
 	for (TSubclassOf<ULuaState> LuaStateClass : LuaStatesKeys)
 	{
@@ -92,7 +94,23 @@ void FLuaMachineModule::CleanupLuaStates(bool bIsSimulating)
 		}
 	}
 
+	for (ULuaState* luaState : LuaInstancedStates)
+	{
+		if (luaState->bPersistent)
+		{
+			PersistentInstancedLuaStates.Add(luaState);
+		}
+		else
+		{
+			if (FLuaCommandExecutor* LuaConsole = luaState->GetLuaConsole())
+			{
+				IModularFeatures::Get().UnregisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), LuaConsole);
+			}
+		}
+	}
+
 	LuaStates = PersistentLuaStates;
+	LuaInstancedStates = PersistentInstancedLuaStates;
 	OnRegisteredLuaStatesChanged.Broadcast();
 }
 
@@ -124,12 +142,51 @@ ULuaState* FLuaMachineModule::GetLuaState(TSubclassOf<ULuaState> LuaStateClass, 
 	return LuaStates[LuaStateClass]->GetLuaState(InWorld);
 }
 
+ULuaState* FLuaMachineModule::GetLuaState(ULuaState* LuaState, UWorld* InWorld, bool bCheckOnly)
+{
+	if (!LuaState)
+	{
+		return nullptr;
+	}
+
+	return LuaState->GetLuaState(InWorld);
+}
+
+ULuaState* FLuaMachineModule::CreateDynamicLuaState(TSubclassOf<ULuaState> LuaStateClass, UWorld* InWorld, bool bCheckOnly)
+{
+	if (!LuaStateClass)
+	{
+		return nullptr;
+	}
+
+	if (LuaStateClass == ULuaState::StaticClass())
+	{
+		UE_LOG(LogLuaMachine, Error, TEXT("attempt to use LuaState Abstract class, please create a child of LuaState"));
+		return nullptr;
+	}
+
+
+	ULuaState* NewLuaState = NewObject<ULuaState>((UObject*)GetTransientPackage(), LuaStateClass);
+	if (!NewLuaState)
+	{
+		return nullptr;
+	}
+
+	LuaInstancedStates.Add(NewLuaState);
+
+	return NewLuaState->GetLuaState(InWorld);
+}
+
 TArray<ULuaState*> FLuaMachineModule::GetRegisteredLuaStates()
 {
 	TArray<ULuaState*> RegisteredStates;
 	for (TPair< TSubclassOf<ULuaState>, ULuaState*>& Pair : LuaStates)
 	{
 		RegisteredStates.Add(Pair.Value);
+	}
+	for (ULuaState* luaState : LuaInstancedStates)
+	{
+		RegisteredStates.Add(luaState);
 	}
 
 	return RegisteredStates;
@@ -151,6 +208,9 @@ void FLuaMachineModule::UnregisterLuaState(ULuaState* LuaState)
 	{
 		LuaStates.Remove(FoundLuaStateClass);
 	}
+
+	// Remove from instanced states list
+	LuaInstancedStates.RemoveSingle(LuaState);
 
 	// trick for waking up on low-level destructor
 	OnRegisteredLuaStatesChanged.Broadcast();

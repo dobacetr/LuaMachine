@@ -24,7 +24,9 @@ public:
 	void CleanupLuaStates(bool bIsSimulating);
 	void UnregisterLuaState(ULuaState* LuaState);
 
-	ULuaState* GetLuaState(TSubclassOf<ULuaState> LuaStateClass, UWorld* InWorld, bool bCheckOnly=false);
+	ULuaState* GetLuaState(TSubclassOf<ULuaState> LuaStateClass, UWorld* InWorld, bool bCheckOnly = false);
+	ULuaState* GetLuaState(ULuaState* LuaState, UWorld* InWorld, bool bCheckOnly = false);
+	ULuaState* CreateDynamicLuaState(TSubclassOf<ULuaState> LuaStateClass, UWorld* InWorld, bool bCheckOnly = false);
 
 	TArray<ULuaState*> GetRegisteredLuaStates();
 
@@ -52,5 +54,6 @@ public:
 
 private:
 	TMap<TSubclassOf<ULuaState>, ULuaState*> LuaStates;
+	TArray<ULuaState*> LuaInstancedStates;
 	TSet<FString> LuaConsoleCommands;
 };

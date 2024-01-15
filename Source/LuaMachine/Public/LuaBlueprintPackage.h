@@ -22,9 +22,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
 	TSubclassOf<ULuaState> GetLuaState() const;
-
-	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
-	ULuaState* GetLuaStateInstance() const;
 	
 	virtual UWorld* GetWorld() const override;
 

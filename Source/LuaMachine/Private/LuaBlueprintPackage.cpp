@@ -2,7 +2,6 @@
 
 
 #include "LuaBlueprintPackage.h"
-#include "LuaState.h"
 
 TSubclassOf<ULuaState> ULuaBlueprintPackage::GetLuaState() const
 {
@@ -12,11 +11,6 @@ TSubclassOf<ULuaState> ULuaBlueprintPackage::GetLuaState() const
 		return LuaState->GetClass();
 	}
 	return nullptr;
-}
-
-ULuaState* ULuaBlueprintPackage::GetLuaStateInstance() const
-{
-	return Cast<ULuaState>(GetOuter());
 }
 
 UWorld* ULuaBlueprintPackage::GetWorld() const

@@ -132,6 +132,7 @@ FLuaValue::FLuaValue(const FLuaValue& SourceValue)
 	String = SourceValue.String;
 	FunctionName = SourceValue.FunctionName;
 	MulticastScriptDelegate = SourceValue.MulticastScriptDelegate;
+	SubCategoryObjectType = SourceValue.SubCategoryObjectType;
 
 	// make a new reference to the table, to avoid it being destroyed
 	if (LuaRef != LUA_NOREF)
@@ -153,6 +154,7 @@ FLuaValue& FLuaValue::operator = (const FLuaValue& SourceValue)
 	String = SourceValue.String;
 	FunctionName = SourceValue.FunctionName;
 	MulticastScriptDelegate = SourceValue.MulticastScriptDelegate;
+	SubCategoryObjectType = SourceValue.SubCategoryObjectType;
 
 	// make a new reference to the table, to avoid it being destroyed
 	if (LuaRef != LUA_NOREF)

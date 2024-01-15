@@ -1,6 +1,7 @@
 // Copyright 2018-2023 - Roberto De Ioris
 
 #include "LuaTableAsset.h"
+#include "LuaState.h"
 
 FLuaValue ULuaTableAsset::ToLuaTable(ULuaState* LuaState)
 {
