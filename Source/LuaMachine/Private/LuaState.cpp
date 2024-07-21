@@ -2066,7 +2066,6 @@ int ULuaState::TableFunction_package_preload(lua_State * L)
 		{
 			return 1;
 		}
-		return luaL_error(L, "%s", lua_tostring(L, -1));
 
 		// now search in additional paths
 		for (FString AdditionalPath : LuaState->AppendProjectContentDirSubDir)
@@ -2075,7 +2074,6 @@ int ULuaState::TableFunction_package_preload(lua_State * L)
 			{
 				return 1;
 			}
-			return luaL_error(L, "%s", lua_tostring(L, -1));
 
 		}
 		return luaL_error(L, "unable to find package %s", TCHAR_TO_ANSI(*Key));
